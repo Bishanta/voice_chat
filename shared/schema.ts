@@ -45,6 +45,12 @@ export type Call = typeof calls.$inferSelect;
 // WebSocket message types
 export const wsMessageSchema = z.discriminatedUnion("type", [
   z.object({
+    type: z.literal("admin_register"),
+    data: z.object({
+      adminId: z.string(),
+    }),
+  }),
+  z.object({
     type: z.literal("call_initiated"),
     data: z.object({
       callId: z.string(),

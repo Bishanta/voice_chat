@@ -146,6 +146,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!client) return;
 
     switch (message.type) {
+      case 'admin_register':
+        await handleAdminRegister(socketId, message.data);
+        break;
       case 'call_initiated':
         await handleCallInitiated(socketId, message.data);
         break;
@@ -173,25 +176,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   }
 
+  async function handleAdminRegister(socketId: string, data: any) {
+    const client = clients.get(socketId);
+    if (!client) return;
+
+    // Mark this client as admin
+    client.isAdmin = true;
+    client.userId = data.adminId;
+    
+    console.log(`Admin registered: ${data.adminId} with socket ${socketId}`);
+  }
+
   async function handleCallInitiated(socketId: string, data: any) {
     const client = clients.get(socketId);
     if (!client) return;
 
-    // Register user if not already registered
-    if (!client.userId) {
-      client.userId = data.caller.id;
-      userSockets.set(data.caller.id, socketId);
-    }
+    console.log(`Call initiated from ${client.isAdmin ? 'admin' : 'user'} socket ${socketId}`);
+    console.log('Call data:', data);
 
-    // Find receiver socket
-    const receiverSocketId = userSockets.get(data.receiver.id);
-    if (receiverSocketId) {
-      const receiverClient = clients.get(receiverSocketId);
-      if (receiverClient && receiverClient.socket.connected) {
-        receiverClient.socket.emit('message', {
-          type: 'call_initiated',
-          data: data,
-        });
+    // If this is an admin calling a customer
+    if (client.isAdmin) {
+      // Find customer socket
+      const customerSocketId = userSockets.get(data.receiver.id);
+      if (customerSocketId) {
+        const customerClient = clients.get(customerSocketId);
+        if (customerClient && customerClient.socket.connected) {
+          customerClient.socket.emit('message', {
+            type: 'call_initiated',
+            data: data,
+          });
+          console.log(`Call sent to customer ${data.receiver.id}`);
+        } else {
+          console.log(`Customer ${data.receiver.id} not connected`);
+        }
+      } else {
+        console.log(`Customer ${data.receiver.id} socket not found`);
+      }
+    } else {
+      // If this is a customer calling admin, find admin socket
+      const adminSocketId = Array.from(clients.entries())
+        .find(([_, client]) => client.isAdmin)?.[0];
+      
+      if (adminSocketId) {
+        const adminClient = clients.get(adminSocketId);
+        if (adminClient && adminClient.socket.connected) {
+          adminClient.socket.emit('message', {
+            type: 'call_initiated',
+            data: data,
+          });
+          console.log(`Call sent to admin`);
+        }
+      } else {
+        console.log('Admin not connected');
       }
     }
   }

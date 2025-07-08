@@ -77,6 +77,10 @@ export function useWebSocket(onMessage?: (message: WSMessage) => void) {
       socketRef.current.emit('message', message);
     } else {
       console.error('Socket is not connected');
+      // Try to reconnect if socket is disconnected
+      if (socketRef.current && !socketRef.current.connected) {
+        socketRef.current.connect();
+      }
     }
   }, []);
 

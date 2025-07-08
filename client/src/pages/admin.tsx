@@ -58,6 +58,19 @@ export default function AdminPage() {
     initializePeerConnection 
   } = useWebRTC(activeCall?.id || "", false, sendMessage);
 
+  // Register admin on socket connection
+  useEffect(() => {
+    if (sendMessage) {
+      console.log('Registering admin...');
+      sendMessage({
+        type: 'admin_register',
+        data: {
+          adminId: 'admin-user',
+        },
+      });
+    }
+  }, [sendMessage]);
+
   useEffect(() => {
     if (customersData) {
       setCustomers(customersData);
