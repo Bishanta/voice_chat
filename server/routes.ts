@@ -1,21 +1,26 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { WebSocketServer, WebSocket } from "ws";
+import { Server as SocketIOServer } from "socket.io";
 import { storage } from "./storage";
 import { wsMessageSchema, type WSMessage } from "@shared/schema";
 import { z } from "zod";
 
-interface WSClient {
-  ws: WebSocket;
+interface SocketClient {
+  socket: any;
   userId?: string;
   isAdmin?: boolean;
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  const io = new SocketIOServer(httpServer, {
+    cors: {
+      origin: "*",
+      methods: ["GET", "POST"]
+    }
+  });
   
-  const clients = new Map<string, WSClient>();
+  const clients = new Map<string, SocketClient>();
   const userSockets = new Map<string, string>(); // userId -> socketId
 
   // REST API routes
@@ -99,40 +104,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // WebSocket handling
-  wss.on('connection', (ws: WebSocket) => {
-    const socketId = generateSocketId();
-    clients.set(socketId, { ws });
+  // Socket.io handling
+  io.on('connection', (socket) => {
+    const socketId = socket.id;
+    clients.set(socketId, { socket });
 
-    ws.on('message', async (data: Buffer) => {
+    console.log(`Client connected: ${socketId}`);
+
+    socket.on('message', async (data: any) => {
       try {
-        const message = JSON.parse(data.toString());
-        const parsedMessage = wsMessageSchema.parse(message);
-        
-        await handleWSMessage(socketId, parsedMessage);
+        const parsedMessage = wsMessageSchema.parse(data);
+        await handleSocketMessage(socketId, parsedMessage);
       } catch (error) {
-        console.error('WebSocket message error:', error);
-        ws.send(JSON.stringify({ type: 'error', message: 'Invalid message format' }));
+        console.error('Socket message error:', error);
+        socket.emit('error', { message: 'Invalid message format' });
       }
     });
 
-    ws.on('close', () => {
+    socket.on('disconnect', async () => {
       const client = clients.get(socketId);
       if (client && client.userId) {
         userSockets.delete(client.userId);
         // Update user status to offline
-        storage.getUserByCustomerId(client.userId).then(user => {
+        try {
+          const user = await storage.getUserByCustomerId(client.userId);
           if (user) {
-            storage.updateUserStatus(user.customerId, "offline");
+            await storage.updateUserStatus(user.customerId, "offline");
             broadcastUserStatusUpdate(user.customerId, "offline");
           }
-        });
+        } catch (error) {
+          console.error('Error updating user status on disconnect:', error);
+        }
       }
       clients.delete(socketId);
+      console.log(`Client disconnected: ${socketId}`);
     });
   });
 
-  async function handleWSMessage(socketId: string, message: WSMessage) {
+  async function handleSocketMessage(socketId: string, message: WSMessage) {
     const client = clients.get(socketId);
     if (!client) return;
 
@@ -178,11 +187,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const receiverSocketId = userSockets.get(data.receiver.id);
     if (receiverSocketId) {
       const receiverClient = clients.get(receiverSocketId);
-      if (receiverClient && receiverClient.ws.readyState === WebSocket.OPEN) {
-        receiverClient.ws.send(JSON.stringify({
+      if (receiverClient && receiverClient.socket.connected) {
+        receiverClient.socket.emit('message', {
           type: 'call_initiated',
           data: data,
-        }));
+        });
       }
     }
   }
@@ -244,8 +253,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   function broadcastToCall(callId: string, message: any, excludeSocketId?: string) {
     clients.forEach((client, socketId) => {
       if (excludeSocketId && socketId === excludeSocketId) return;
-      if (client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(JSON.stringify(message));
+      if (client.socket.connected) {
+        client.socket.emit('message', message);
       }
     });
   }
@@ -257,8 +266,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     };
 
     clients.forEach((client) => {
-      if (client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(JSON.stringify(message));
+      if (client.socket.connected) {
+        client.socket.emit('message', message);
       }
     });
   }

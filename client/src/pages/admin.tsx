@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -23,9 +23,32 @@ export default function AdminPage() {
     refetchInterval: 5000,
   });
 
-  const { sendMessage } = useWebSocket((message) => {
-    handleWebSocketMessage(message);
-  });
+  const handleWebSocketMessage = useCallback((message: any) => {
+    switch (message.type) {
+      case 'call_initiated':
+        handleIncomingCall(message.data);
+        break;
+      case 'call_accepted':
+        handleCallAccepted(message.data);
+        break;
+      case 'call_declined':
+        handleCallDeclined(message.data);
+        break;
+      case 'call_ended':
+        handleCallEnded(message.data);
+        break;
+      case 'user_status_update':
+        handleUserStatusUpdate(message.data);
+        break;
+      case 'webrtc_offer':
+      case 'webrtc_answer':
+      case 'webrtc_ice_candidate':
+        // These will be handled by the WebRTC hook when it's initialized
+        break;
+    }
+  }, []);
+
+  const { sendMessage } = useWebSocket(handleWebSocketMessage);
 
   const { 
     isConnected, 
@@ -33,7 +56,7 @@ export default function AdminPage() {
     toggleMute, 
     endCall: endWebRTCCall, 
     initializePeerConnection 
-  } = useWebRTC(activeCall?.id || "", false);
+  } = useWebRTC(activeCall?.id || "", false, sendMessage);
 
   useEffect(() => {
     if (customersData) {
@@ -51,25 +74,7 @@ export default function AdminPage() {
     return () => clearInterval(interval);
   }, [activeCall, callModalType]);
 
-  const handleWebSocketMessage = (message: any) => {
-    switch (message.type) {
-      case 'call_initiated':
-        handleIncomingCall(message.data);
-        break;
-      case 'call_accepted':
-        handleCallAccepted(message.data);
-        break;
-      case 'call_declined':
-        handleCallDeclined(message.data);
-        break;
-      case 'call_ended':
-        handleCallEnded(message.data);
-        break;
-      case 'user_status_update':
-        handleUserStatusUpdate(message.data);
-        break;
-    }
-  };
+
 
   const handleIncomingCall = (data: any) => {
     setIncomingCalls(prev => [...prev, data]);

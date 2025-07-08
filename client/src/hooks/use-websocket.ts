@@ -1,57 +1,84 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { io, Socket } from 'socket.io-client';
 import { WSMessage } from '@shared/schema';
 
 export function useWebSocket(onMessage?: (message: WSMessage) => void) {
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const socketRef = useRef<Socket | null>(null);
 
-  useEffect(() => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-    
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      setIsConnected(true);
-      setError(null);
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data);
-        if (onMessage) {
-          onMessage(message);
-        }
-      } catch (err) {
-        console.error('Failed to parse WebSocket message:', err);
-      }
-    };
-
-    ws.onclose = () => {
-      setIsConnected(false);
-    };
-
-    ws.onerror = (event) => {
-      setError('WebSocket connection error');
-      console.error('WebSocket error:', event);
-    };
-
-    return () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      }
-    };
+  // Memoize the onMessage callback to prevent unnecessary re-connections
+  const memoizedOnMessage = useCallback((message: WSMessage) => {
+    if (onMessage) {
+      onMessage(message);
+    }
   }, [onMessage]);
 
-  const sendMessage = (message: WSMessage) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
-    } else {
-      console.error('WebSocket is not connected');
+  useEffect(() => {
+    // Only create socket if it doesn't exist
+    if (!socketRef.current) {
+      const socket = io(window.location.origin, {
+        transports: ['websocket', 'polling'],
+        timeout: 20000,
+        reconnection: true,
+        reconnectionAttempts: 5,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+      });
+
+      socketRef.current = socket;
+
+      socket.on('connect', () => {
+        console.log('Socket.io connected');
+        setIsConnected(true);
+        setError(null);
+      });
+
+      socket.on('message', (message: WSMessage) => {
+        try {
+          memoizedOnMessage(message);
+        } catch (err) {
+          console.error('Failed to handle socket message:', err);
+        }
+      });
+
+      socket.on('disconnect', (reason) => {
+        console.log('Socket.io disconnected:', reason);
+        setIsConnected(false);
+        
+        // Only set error for unexpected disconnections
+        if (reason === 'io server disconnect') {
+          setError('Server disconnected');
+        }
+      });
+
+      socket.on('connect_error', (err) => {
+        console.error('Socket.io connection error:', err);
+        setError('Connection error');
+      });
+
+      socket.on('error', (err) => {
+        console.error('Socket.io error:', err);
+        setError('Socket error');
+      });
     }
-  };
+
+    return () => {
+      // Clean up socket on unmount
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+    };
+  }, [memoizedOnMessage]);
+
+  const sendMessage = useCallback((message: WSMessage) => {
+    if (socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit('message', message);
+    } else {
+      console.error('Socket is not connected');
+    }
+  }, []);
 
   return { isConnected, error, sendMessage };
 }

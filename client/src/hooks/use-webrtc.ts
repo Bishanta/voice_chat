@@ -1,7 +1,6 @@
 import { useRef, useCallback, useState } from 'react';
-import { useWebSocket } from './use-websocket';
 
-export function useWebRTC(callId: string, isInitiator: boolean = false) {
+export function useWebRTC(callId: string, isInitiator: boolean = false, sendMessage?: (message: any) => void) {
   const [isConnected, setIsConnected] = useState(false);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -11,12 +10,8 @@ export function useWebRTC(callId: string, isInitiator: boolean = false) {
   const localAudioRef = useRef<HTMLAudioElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  const { sendMessage } = useWebSocket((message) => {
-    handleWebSocketMessage(message);
-  });
-
-  const handleWebSocketMessage = useCallback(async (message: any) => {
-    if (!peerConnectionRef.current) return;
+  const handleWebRTCMessage = useCallback(async (message: any) => {
+    if (!peerConnectionRef.current || !callId) return;
 
     switch (message.type) {
       case 'webrtc_offer':
@@ -70,7 +65,7 @@ export function useWebRTC(callId: string, isInitiator: boolean = false) {
 
       // Handle ICE candidates
       pc.onicecandidate = (event) => {
-        if (event.candidate) {
+        if (event.candidate && sendMessage) {
           sendMessage({
             type: 'webrtc_ice_candidate',
             data: {
@@ -107,13 +102,15 @@ export function useWebRTC(callId: string, isInitiator: boolean = false) {
       const offer = await peerConnectionRef.current.createOffer();
       await peerConnectionRef.current.setLocalDescription(offer);
       
-      sendMessage({
-        type: 'webrtc_offer',
-        data: {
-          callId,
-          offer,
-        },
-      });
+      if (sendMessage) {
+        sendMessage({
+          type: 'webrtc_offer',
+          data: {
+            callId,
+            offer,
+          },
+        });
+      }
     } catch (error) {
       console.error('Failed to create offer:', error);
     }
@@ -127,13 +124,15 @@ export function useWebRTC(callId: string, isInitiator: boolean = false) {
       const answer = await peerConnectionRef.current.createAnswer();
       await peerConnectionRef.current.setLocalDescription(answer);
       
-      sendMessage({
-        type: 'webrtc_answer',
-        data: {
-          callId,
-          answer,
-        },
-      });
+      if (sendMessage) {
+        sendMessage({
+          type: 'webrtc_answer',
+          data: {
+            callId,
+            answer,
+          },
+        });
+      }
     } catch (error) {
       console.error('Failed to handle offer:', error);
     }
@@ -194,5 +193,6 @@ export function useWebRTC(callId: string, isInitiator: boolean = false) {
     initializePeerConnection,
     toggleMute,
     endCall,
+    handleWebRTCMessage,
   };
 }
