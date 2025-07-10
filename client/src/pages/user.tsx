@@ -6,11 +6,13 @@ import { Badge } from "@/components/ui/badge";
 import { Headphones, Phone, PhoneOff, Mic, MicOff, History } from "lucide-react";
 import { UserLoginModal } from "@/components/user-login-modal";
 import { CallModal } from "@/components/call-modal";
-import { useWebSocket } from "@/hooks/use-websocket";
+import { useSocket } from "@/hooks/use-socket";
 import { useWebRTC } from "@/hooks/use-webrtc";
 import { audioManager } from "@/lib/audio-context";
 import { apiRequest } from "@/lib/queryClient";
 import { User } from "@shared/schema";
+import { toast } from "@/hooks/use-toast";
+
 
 export default function UserPage() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -43,36 +45,35 @@ export default function UserPage() {
     }
   }, []);
 
-  const { sendMessage } = useWebSocket(handleWebSocketMessage);
+  const { initSocket, sendMessage } = useSocket();
 
   const { 
+    initializeWebRTC,
     isConnected, 
     isMuted, 
     toggleMute, 
     endCall: endWebRTCCall, 
     initializePeerConnection 
-  } = useWebRTC(activeCall?.callId || "", true, sendMessage);
+  } = useWebRTC();
 
   const loginMutation = useMutation({
     mutationFn: async (customerId: string) => {
       const response = await apiRequest("POST", "/api/auth/login", { customerId });
       return response.json();
     },
-    onSuccess: (user: User) => {
+    onSuccess: async (user: User) => {
       setCurrentUser(user);
       setShowLoginModal(false);
-      
-      // Register with WebSocket
-      sendMessage({
-        type: 'user_status_update',
-        data: {
-          userId: user.customerId,
-          status: 'available',
-        },
-      });
+      const socket = await initSocket(handleWebSocketMessage, user);
+      initializeWebRTC(socket);
     },
     onError: (error) => {
-      console.error('Login failed:', error);
+      console.log(error.message)
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: error.message,
+      });
     },
   });
 
@@ -101,7 +102,7 @@ export default function UserPage() {
     setCallState("connected");
     setCallModalType("active");
     setCallDuration(0);
-    initializePeerConnection();
+    initializePeerConnection(data, true);
   };
 
   const handleCallDeclined = (data: any) => {
@@ -135,18 +136,14 @@ export default function UserPage() {
         id: currentUser.customerId,
         name: currentUser.name,
         avatar: currentUser.avatar,
-      },
-      receiver: {
-        id: "ADMIN001",
-        name: "Admin User",
-      },
+      }
     };
 
     setActiveCall(callData);
     setCallState("calling");
     setCallModalType("outgoing");
     setShowCallModal(true);
-
+    initializePeerConnection(callData, false);
     sendMessage({
       type: 'call_initiated',
       data: callData,
@@ -155,10 +152,14 @@ export default function UserPage() {
 
   const acceptCall = () => {
     if (activeCall) {
+      console.log("Accepting call...", activeCall);
       sendMessage({
         type: 'call_accepted',
-        data: { callId: activeCall.callId },
+        data: {
+          callId: activeCall.callId,
+        },
       });
+      handleCallAccepted(activeCall);
     }
   };
 
@@ -166,18 +167,26 @@ export default function UserPage() {
     if (activeCall) {
       sendMessage({
         type: 'call_declined',
-        data: { callId: activeCall.callId },
+        data: {
+          callId: activeCall.callId,
+        },
       });
     }
   };
 
   const endCall = () => {
     if (activeCall) {
-      sendMessage({
+      sendMessage({ 
         type: 'call_ended',
-        data: { callId: activeCall.callId },
+        data: {
+          callId: activeCall.callId,
+        },
       });
     }
+    setActiveCall(null);
+    setShowCallModal(false);
+    setCallState("idle");
+    endWebRTCCall();
   };
 
   const formatDuration = (seconds: number) => {

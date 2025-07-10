@@ -62,7 +62,7 @@ export const wsMessageSchema = z.discriminatedUnion("type", [
       receiver: z.object({
         id: z.string(),
         name: z.string(),
-      }),
+      }).optional(),
     }),
   }),
   z.object({

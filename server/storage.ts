@@ -40,21 +40,28 @@ export class MemStorage implements IStorage {
         customerId: "ADMIN001",
         name: "Admin User",
         avatar: "AD",
-        status: "available",
+        status: "offline",
+        isAdmin: true,
+      },
+      {
+        customerId: "ADMIN002",
+        name: "Admin User 2",
+        avatar: "AD2",
+        status: "offline",
         isAdmin: true,
       },
       {
         customerId: "CUST001",
         name: "John Doe",
         avatar: "JD",
-        status: "available",
+        status: "offline",
         isAdmin: false,
       },
       {
         customerId: "CUST002",
         name: "Sarah Miller",
         avatar: "SM",
-        status: "available",
+        status: "offline",
         isAdmin: false,
       },
       {
@@ -83,10 +90,12 @@ export class MemStorage implements IStorage {
 
   async createUser(insertUser: InsertUser): Promise<User> {
     const id = this.currentUserId++;
-    const user: User = { 
-      ...insertUser, 
+    const user: User = {
       id,
+      status: 'offline',
+      isAdmin: false,
       createdAt: new Date(),
+      ...insertUser,
     };
     this.users.set(id, user);
     return user;

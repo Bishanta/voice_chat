@@ -1,16 +1,22 @@
 import { useEffect, useState, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Headphones, Phone, Users, PhoneCall } from "lucide-react";
+import { Headphones, Phone, Users } from "lucide-react";
+import { AdminLoginModal } from "@/components/admin-login-modal";
 import { CallModal } from "@/components/call-modal";
-import { useWebSocket } from "@/hooks/use-websocket";
+import { useSocket } from "@/hooks/use-socket";
 import { useWebRTC } from "@/hooks/use-webrtc";
 import { audioManager } from "@/lib/audio-context";
+import { apiRequest } from "@/lib/queryClient";
 import { User } from "@shared/schema";
+import { toast } from "@/hooks/use-toast";
+import { WSMessage } from "@shared/schema";
 
 export default function AdminPage() {
+  const [currentAdmin, setCurrentAdmin] = useState<User | null>(null);
+  const [showLoginModal, setShowLoginModal] = useState(true);
   const [customers, setCustomers] = useState<User[]>([]);
   const [incomingCalls, setIncomingCalls] = useState<any[]>([]);
   const [activeCall, setActiveCall] = useState<any>(null);
@@ -18,12 +24,13 @@ export default function AdminPage() {
   const [showCallModal, setShowCallModal] = useState(false);
   const [callModalType, setCallModalType] = useState<"incoming" | "outgoing" | "active">("incoming");
 
-  const { data: customersData, refetch: refetchCustomers } = useQuery({
+  const { data: customersData } = useQuery<User[]>({
     queryKey: ["/api/users/customers"],
     refetchInterval: 5000,
+    enabled: !!currentAdmin, // Only fetch customers when admin is logged in
   });
 
-  const handleWebSocketMessage = useCallback((message: any) => {
+  const handleWebSocketMessage = useCallback((message: WSMessage) => {
     switch (message.type) {
       case 'call_initiated':
         handleIncomingCall(message.data);
@@ -48,28 +55,50 @@ export default function AdminPage() {
     }
   }, []);
 
-  const { sendMessage } = useWebSocket(handleWebSocketMessage);
+  const { initSocket, isConnected, sendMessage } = useSocket();
 
   const { 
-    isConnected, 
+    initializeWebRTC,
     isMuted, 
     toggleMute, 
     endCall: endWebRTCCall, 
     initializePeerConnection 
-  } = useWebRTC(activeCall?.id || "", false, sendMessage);
+  } = useWebRTC();
 
-  // Register admin on socket connection
-  useEffect(() => {
-    if (sendMessage) {
-      console.log('Registering admin...');
-      sendMessage({
-        type: 'admin_register',
-        data: {
-          adminId: 'admin-user',
-        },
+  const loginMutation = useMutation({
+    mutationFn: async (accessCode: string) => {
+      const response = await apiRequest("POST", "/api/auth/admin/login", { accessCode });
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Login failed');
+      }
+      return response.json();
+    },
+    onSuccess: async (user: User) => {
+      setCurrentAdmin(user);
+      setShowLoginModal(false);
+      const socket = await initSocket(handleWebSocketMessage, user);
+      await initializeWebRTC(socket);
+      // socket.emit('admin_register', {
+      //   data: {
+      //     adminId: user.customerId,
+      //   },
+      // });
+      // sendMessage({
+      //   type: 'admin_register',
+      //   data: {
+      //     adminId: user.customerId,
+      //   },
+      // });
+    },
+    onError: (error: Error) => {
+      toast({
+        variant: "destructive",
+        title: "Authentication Failed",
+        description: error.message,
       });
-    }
-  }, [sendMessage]);
+    },
+  });
 
   useEffect(() => {
     if (customersData) {
@@ -87,8 +116,6 @@ export default function AdminPage() {
     return () => clearInterval(interval);
   }, [activeCall, callModalType]);
 
-
-
   const handleIncomingCall = (data: any) => {
     setIncomingCalls(prev => [...prev, data]);
     setActiveCall(data);
@@ -101,7 +128,7 @@ export default function AdminPage() {
     audioManager.stopRingTone();
     setCallModalType("active");
     setCallDuration(0);
-    initializePeerConnection();
+    initializePeerConnection(data);
   };
 
   const handleCallDeclined = (data: any) => {
@@ -131,25 +158,27 @@ export default function AdminPage() {
   };
 
   const callCustomer = (customer: User) => {
+    if (!currentAdmin) return;
     audioManager.resumeAudioContext();
     const callId = `call_${Date.now()}`;
     const callData = {
       callId,
       caller: {
-        id: "ADMIN001",
-        name: "Admin User",
-        avatar: "AD",
+        id: currentAdmin.customerId,
+        name: currentAdmin.name,
+        avatar: currentAdmin.avatar,
       },
       receiver: {
         id: customer.customerId,
         name: customer.name,
+        avatar: customer.avatar,
       },
     };
 
     setActiveCall(callData);
     setCallModalType("outgoing");
     setShowCallModal(true);
-
+    initializePeerConnection(callData, false);
     sendMessage({
       type: 'call_initiated',
       data: callData,
@@ -160,8 +189,16 @@ export default function AdminPage() {
     if (activeCall) {
       sendMessage({
         type: 'call_accepted',
-        data: { callId: activeCall.callId },
+        data: {
+          callId: activeCall.callId,
+        },
       });
+
+      audioManager.stopRingTone();
+      setCallModalType("active");
+      setCallDuration(0);
+      initializePeerConnection(activeCall, true);
+      // UI state will be updated by the call_accepted websocket message
     }
   };
 
@@ -169,8 +206,11 @@ export default function AdminPage() {
     if (activeCall) {
       sendMessage({
         type: 'call_declined',
-        data: { callId: activeCall.callId },
+        data: {
+          callId: activeCall.callId,
+        },
       });
+      // UI state will be updated by the call_declined websocket message
     }
   };
 
@@ -178,8 +218,11 @@ export default function AdminPage() {
     if (activeCall) {
       sendMessage({
         type: 'call_ended',
-        data: { callId: activeCall.callId },
+        data: {
+          callId: activeCall.callId,
+        },
       });
+      // UI state will be updated by the call_ended websocket message
     }
   };
 
@@ -191,27 +234,19 @@ export default function AdminPage() {
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'available':
-        return 'bg-green-500';
-      case 'busy':
-        return 'bg-yellow-500';
-      case 'calling':
-        return 'bg-blue-500';
-      default:
-        return 'bg-gray-400';
+      case 'available': return 'bg-green-500';
+      case 'busy': return 'bg-yellow-500';
+      case 'calling': return 'bg-blue-500';
+      default: return 'bg-gray-400';
     }
   };
 
   const getStatusText = (status: string) => {
     switch (status) {
-      case 'available':
-        return 'Available';
-      case 'busy':
-        return 'Busy';
-      case 'calling':
-        return 'Calling you';
-      default:
-        return 'Offline';
+      case 'available': return 'Available';
+      case 'busy': return 'Busy';
+      case 'calling': return 'Calling you';
+      default: return 'Offline';
     }
   };
 
@@ -225,9 +260,20 @@ export default function AdminPage() {
     return colors[avatar.charCodeAt(0) % colors.length];
   };
 
+  const handleLogin = (accessCode: string) => {
+    loginMutation.mutate(accessCode);
+  };
+
+  if (showLoginModal) {
+    return <AdminLoginModal isOpen={showLoginModal} onLogin={handleLogin} />;
+  }
+
+  if (!currentAdmin) {
+    return <div className="flex items-center justify-center h-screen">Loading...</div>;
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      {/* Admin Header */}
       <Card className="mb-6">
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -236,12 +282,12 @@ export default function AdminPage() {
                 <Headphones className="h-6 w-6" />
                 <span>Admin Dashboard</span>
               </CardTitle>
-              <p className="text-gray-600 mt-1">Manage customer calls and communications</p>
+              <p className="text-gray-600 mt-1">Welcome, {currentAdmin.customerId}</p>
             </div>
             <div className="flex items-center space-x-4">
               <div className="flex items-center space-x-2">
-                <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-                <span className="text-sm text-gray-600">Online</span>
+                <div className={`w-3 h-3 ${isConnected ? 'bg-green-500' : 'bg-red-500'} rounded-full`}></div>
+                <span className="text-sm text-gray-600">{isConnected ? 'Connected' : 'Disconnected'}</span>
               </div>
               {incomingCalls.length > 0 && (
                 <Badge variant="destructive" className="px-3 py-1">
@@ -253,7 +299,6 @@ export default function AdminPage() {
         </CardHeader>
       </Card>
 
-      {/* Customer List */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center space-x-2">
@@ -282,31 +327,18 @@ export default function AdminPage() {
                   </div>
                 </div>
                 <div className="flex items-center space-x-3">
-                  <div className="text-sm text-gray-500">
-                    {customer.status === 'calling' ? 'Incoming call' : 'Ready to call'}
-                  </div>
-                  {customer.status === 'calling' ? (
-                    <Button
-                      onClick={() => callCustomer(customer)}
-                      className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-md flex items-center space-x-2 animate-pulse"
-                    >
-                      <Phone className="h-4 w-4" />
-                      <span>Answer</span>
-                    </Button>
-                  ) : (
-                    <Button
-                      onClick={() => callCustomer(customer)}
-                      disabled={customer.status === 'offline'}
-                      className={`px-4 py-2 rounded-md flex items-center space-x-2 ${
-                        customer.status === 'offline' 
-                          ? 'bg-gray-300 text-gray-500 cursor-not-allowed' 
-                          : 'bg-primary hover:bg-primary-600 text-white'
-                      }`}
-                    >
-                      <Phone className="h-4 w-4" />
-                      <span>Call</span>
-                    </Button>
-                  )}
+                  <Button
+                    onClick={() => callCustomer(customer)}
+                    disabled={customer.status !== 'available'}
+                    className={`px-4 py-2 rounded-md flex items-center space-x-2 ${
+                      customer.status !== 'available' 
+                        ? 'bg-gray-300 text-gray-500 cursor-not-allowed' 
+                        : 'bg-primary hover:bg-primary-600 text-white'
+                    }`}
+                  >
+                    <Phone className="h-4 w-4" />
+                    <span>Call</span>
+                  </Button>
                 </div>
               </div>
             ))}
@@ -314,7 +346,6 @@ export default function AdminPage() {
         </CardContent>
       </Card>
 
-      {/* Call Modal */}
       <CallModal
         isOpen={showCallModal}
         type={callModalType}

@@ -20,9 +20,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
-  const clients = new Map<string, SocketClient>();
-  const userSockets = new Map<string, string>(); // userId -> socketId
-
+  const clients = new Map<string, SocketClient>(); // socketId -> {socket}
+  const userSockets = new Map<string, {socketId: string, isAdmin: boolean}>(); // userId -> {socketId, isAdmin}
+  const activeCalls = new Map<string, {callerId: string, receiverId?: string}>(); // callId -> {callerId, receiverId}
+  setInterval(() => {
+    console.log("Clients: ", clients.size);
+    console.log("User Sockets: ", userSockets.size);
+    console.log("Active Calls: ", activeCalls.size);
+  }, 5000);
+  
   // REST API routes
   app.get("/api/users", async (req, res) => {
     try {
@@ -50,13 +56,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!user) {
         return res.status(401).json({ error: "Invalid customer ID" });
       }
-
+      //if present in userSockets, throw already logged in
+      if (userSockets.has(customerId)) {
+        return res.status(401).json({ error: "User already logged in" });
+      }
       // Update user status to available
       await storage.updateUserStatus(customerId, "available");
       
       res.json(user);
     } catch (error) {
       res.status(500).json({ error: "Login failed" });
+    }
+  });
+
+  app.post("/api/auth/admin/login", async (req, res) => {
+    try {
+      const { accessCode } = req.body;
+      const adminUser = await storage.getUserByCustomerId(accessCode);
+      if (!adminUser) {
+        return res.status(404).json({ error: "Admin user not found" });
+      }
+
+      if (userSockets.has(adminUser.customerId)) {
+        return res.status(401).json({ error: "Admin already logged in" });
+      }
+
+      await storage.updateUserStatus(adminUser.customerId, "available");
+      res.json(adminUser);
+    } catch (error) {
+      res.status(500).json({ error: "Admin login failed" });
     }
   });
 
@@ -112,6 +140,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     console.log(`Client connected: ${socketId}`);
 
     socket.on('message', async (data: any) => {
+      console.log(`Client message: ${data.type}`);
       try {
         const parsedMessage = wsMessageSchema.parse(data);
         await handleSocketMessage(socketId, parsedMessage);
@@ -122,12 +151,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     socket.on('disconnect', async () => {
+      console.log(`Client disconnected: ${socketId}`)
+      const userId = getUserIdFromSocketId(socketId);
       const client = clients.get(socketId);
-      if (client && client.userId) {
-        userSockets.delete(client.userId);
+      if (client) {
         // Update user status to offline
         try {
-          const user = await storage.getUserByCustomerId(client.userId);
+          const user = await storage.getUserByCustomerId(userId);
           if (user) {
             await storage.updateUserStatus(user.customerId, "offline");
             broadcastUserStatusUpdate(user.customerId, "offline");
@@ -136,15 +166,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.error('Error updating user status on disconnect:', error);
         }
       }
+      const activeCall = getActiveCallFromUserID(userId);
+      if(activeCall){
+        activeCalls.delete(activeCall);
+      }
+      userSockets.delete(userId);
       clients.delete(socketId);
-      console.log(`Client disconnected: ${socketId}`);
     });
   });
 
   async function handleSocketMessage(socketId: string, message: WSMessage) {
-    const client = clients.get(socketId);
-    if (!client) return;
-
     switch (message.type) {
       case 'admin_register':
         await handleAdminRegister(socketId, message.data);
@@ -153,13 +184,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         await handleCallInitiated(socketId, message.data);
         break;
       case 'call_accepted':
-        await handleCallAccepted(socketId, message.data);
+        await handleCallAccepted(socketId, message.data.callId);
         break;
       case 'call_declined':
-        await handleCallDeclined(socketId, message.data);
+        await handleCallDeclined(socketId, message.data.callId);
         break;
       case 'call_ended':
-        await handleCallEnded(socketId, message.data);
+        await handleCallEnded(socketId, message.data.callId);
         break;
       case 'webrtc_offer':
         await handleWebRTCOffer(socketId, message.data);
@@ -179,108 +210,275 @@ export async function registerRoutes(app: Express): Promise<Server> {
   async function handleAdminRegister(socketId: string, data: any) {
     const client = clients.get(socketId);
     if (!client) return;
-
-    // Mark this client as admin
     client.isAdmin = true;
     client.userId = data.adminId;
-    
-    console.log(`Admin registered: ${data.adminId} with socket ${socketId}`);
+    userSockets.set(data.adminId, {
+      socketId,
+      isAdmin: true,
+    });
+  }
+
+  //returns callID
+  function getActiveCallFromUserID(userId: string):string | undefined{
+    const callArray = Array.from(activeCalls.entries());
+    const call = callArray.find(([_, callInfo]) => callInfo.callerId === userId || callInfo.receiverId === userId);
+    return call ? call[0] : undefined;
   }
 
   async function handleCallInitiated(socketId: string, data: any) {
     const client = clients.get(socketId);
     if (!client) return;
 
-    console.log(`Call initiated from ${client.isAdmin ? 'admin' : 'user'} socket ${socketId}`);
-    console.log('Call data:', data);
+    const callInfo: { callerId: string; receiverId?: string } = { 
+      callerId: data.caller.id
+    }
 
-    // If this is an admin calling a customer
-    if (client.isAdmin) {
-      // Find customer socket
-      const customerSocketId = userSockets.get(data.receiver.id);
+    activeCalls.set(data.callId, callInfo);
+    const userId = getUserIdFromSocketId(socketId);
+    const userInfo = userSockets.get(userId)
+    if(!userInfo) return;
+
+    if(userInfo.isAdmin && data.receiver.id){
+      const receiverInfo = userSockets.get(data.receiver.id);
+      const customerSocketId = receiverInfo?.socketId;
       if (customerSocketId) {
         const customerClient = clients.get(customerSocketId);
-        if (customerClient && customerClient.socket.connected) {
+        if (customerClient) {
           customerClient.socket.emit('message', {
             type: 'call_initiated',
             data: data,
           });
-          console.log(`Call sent to customer ${data.receiver.id}`);
         } else {
-          console.log(`Customer ${data.receiver.id} not connected`);
+          console.log(`Customer ${data.caller.id} not connected`);
         }
       } else {
-        console.log(`Customer ${data.receiver.id} socket not found`);
+        console.log(`Customer ${data.caller.id} socket not found`);
       }
     } else {
-      // If this is a customer calling admin, find admin socket
-      const adminSocketId = Array.from(clients.entries())
-        .find(([_, client]) => client.isAdmin)?.[0];
-      
-      if (adminSocketId) {
-        const adminClient = clients.get(adminSocketId);
-        if (adminClient && adminClient.socket.connected) {
-          adminClient.socket.emit('message', {
-            type: 'call_initiated',
-            data: data,
-          });
-          console.log(`Call sent to admin`);
-        }
-      } else {
-        console.log('Admin not connected');
-      }
+      broadcastToAdmins('call_initiated', data);
     }
   }
 
-  async function handleCallAccepted(socketId: string, data: any) {
-    // Broadcast to all participants
-    broadcastToCall(data.callId, {
-      type: 'call_accepted',
-      data: data,
+  function broadcastToAdmins(type: string, data: any) {
+    const adminSocketIds = Array.from(userSockets.entries())
+      .filter(([_, data]) => data.isAdmin)
+      .map(([_, data]) => data.socketId);
+    
+    if (adminSocketIds.length > 0) {
+      for (const adminSocketId of adminSocketIds) {
+        const adminClient = clients.get(adminSocketId);
+        if(adminClient){
+          adminClient.socket.emit('message', {
+            type,
+            data,
+          });
+          console.log(`Call sent to admin`);
+        }
+      }
+    } else {
+      console.log('Admin not connected');
+    }
+  }
+
+  function getUserIdFromSocketId(socketId: string) {
+    //get from userSockets values
+    const adminSocketId = Array.from(userSockets.entries())
+    .filter(([_, data]) => data.socketId === socketId)
+    return adminSocketId[0]?.[0];
+  }
+
+  //make sure data has callId and can also have other fields as necessary. but callId is required.
+  function distributeMessage(socketId: string, message: WSMessage) {
+    const client = clients.get(socketId);
+    if (!client) return;
+    if(message.type === "admin_register") return;
+    if(message.type === "user_status_update") return;
+    
+    const callInfo = activeCalls.get(message.data.callId);
+    if(!callInfo) return;
+
+    if(message.type === "call_accepted" && !callInfo.receiverId) {
+      const userId = getUserIdFromSocketId(socketId);
+      callInfo.receiverId = userId;
+      activeCalls.set(message.data.callId, callInfo)
+    }
+
+    const userInfo = userSockets.get(callInfo.callerId);
+    //if caller is user
+    if(!userInfo?.isAdmin){
+      const customerSocketId = userInfo?.socketId;
+      if (customerSocketId) {
+        const customerClient = clients.get(customerSocketId);
+        if (customerClient) {
+          customerClient.socket.emit('message', message);
+        } else {
+          console.log(`Customer ${callInfo.callerId} not connected`);
+        }
+      } else {
+        console.log(`Customer ${callInfo.callerId} socket not found`);
+      }
+    }
+
+    //should'not get webrtc offer
+    const adminSocketIds = Array.from(userSockets.entries())
+    .filter(([_, data]) => data.isAdmin)
+    .map(([_, data]) => data.socketId);
+    if (adminSocketIds.length > 0) {
+      for (const adminSocketId of adminSocketIds) {
+        const adminClient = clients.get(adminSocketId);
+        if (adminClient) {
+          adminClient.socket.emit('message', message);
+          console.log(`Call accepted by admin`);
+        } else {
+          console.log(`Admin not connected`);
+        }
+      }
+    } else {
+      console.log('Admin not connected');
+    }
+    
+  }
+
+  async function handleCallAccepted(socketId: string, callId: string) {
+    const client = clients.get(socketId);
+    if (!client) return;
+    const callInfo = activeCalls.get(callId);
+    if(!callInfo) return;
+
+    const userId = getUserIdFromSocketId(socketId);
+    const userInfo = userSockets.get(userId)
+    if(!userInfo) return;
+
+    if(!callInfo.receiverId){
+      callInfo.receiverId = userId;
+      activeCalls.set(callId, callInfo)
+    }
+
+    if(userInfo.isAdmin && callInfo.receiverId){
+      const recieverId = callInfo.callerId == userId ? callInfo.receiverId : callInfo.callerId;
+      const receiverInfo = userSockets.get(recieverId);
+      if(!receiverInfo) return;
+      const receiverClient = clients.get(receiverInfo.socketId);
+      if (receiverClient) {
+        receiverClient.socket.emit('message', {
+          type: 'call_accepted',
+          data: {
+            callId,
+          },
+        });
+      } else {
+        console.log(`Customer ${recieverId} not connected`);
+      }
+    }
+    
+    broadcastToAdmins('call_accepted', {
+      callId,
+    });
+
+  }
+
+  async function handleCallDeclined(socketId: string, callId: string) {
+    const client = clients.get(socketId);
+    if (!client) return;
+    const callInfo = activeCalls.get(callId);
+    if(!callInfo) return;
+
+    const userId = getUserIdFromSocketId(socketId);
+    const userInfo = userSockets.get(userId);
+    if(!userInfo) return;
+    
+    if(userInfo.isAdmin && callInfo.receiverId) {
+      const recieverId = callInfo.callerId == userId ? callInfo.receiverId : callInfo.callerId;
+      const receiverInfo = userSockets.get(recieverId);
+      if(!receiverInfo) return;
+      const receiverClient = clients.get(receiverInfo.socketId);
+      if (receiverClient) {
+        receiverClient.socket.emit('message', {
+          type: 'call_declined',
+          data: {
+            callId,
+          },
+        });
+      } else {
+        console.log(`Customer ${recieverId} not connected`);
+      }
+    }
+    
+    broadcastToAdmins('call_declined', {
+      callId,
     });
   }
 
-  async function handleCallDeclined(socketId: string, data: any) {
-    broadcastToCall(data.callId, {
-      type: 'call_declined',
-      data: data,
+  async function handleCallEnded(socketId: string, callId: string) {
+    const callInfo = activeCalls.get(callId);
+    if(!callInfo) return;
+    
+    const userId = getUserIdFromSocketId(socketId);
+    const userInfo = userSockets.get(userId);
+    if(!userInfo) return;
+    if(userInfo.isAdmin && callInfo.receiverId) {
+      const recieverId = callInfo.callerId == userId ? callInfo.receiverId : callInfo.callerId;
+      const receiverInfo = userSockets.get(recieverId);
+      if(!receiverInfo) return;
+      const receiverClient = clients.get(receiverInfo.socketId);
+      if (receiverClient) {
+        receiverClient.socket.emit('message', {
+          type: 'call_ended',
+          data: {
+            callId,
+          },
+        });
+      } else {
+        console.log(`Customer ${recieverId} not connected`);
+      }
+    }
+    
+    broadcastToAdmins('call_ended', {
+      callId,
     });
+    activeCalls.delete(callId);
   }
 
-  async function handleCallEnded(socketId: string, data: any) {
-    broadcastToCall(data.callId, {
-      type: 'call_ended',
-      data: data,
-    });
-  }
-
-  async function handleWebRTCOffer(socketId: string, data: any) {
-    broadcastToCall(data.callId, {
-      type: 'webrtc_offer',
-      data: data,
-    }, socketId);
+  async function handleWebRTCOffer(socketId: string, data:any) {
+    // distributeMessage(socketId, {
+    //   type: 'webrtc_offer',
+    //   data: data,
+    // });
+    // broadcastToCall(data.callId, {
+    //   type: 'webrtc_offer',
+    //   data: data,
+    // }, socketId);
   }
 
   async function handleWebRTCAnswer(socketId: string, data: any) {
-    broadcastToCall(data.callId, {
-      type: 'webrtc_answer',
-      data: data,
-    }, socketId);
+    // distributeMessage(socketId, {
+    //   type: 'webrtc_answer',
+    //   data: data,
+    // });
+    // broadcastToCall(data.callId, {
+    //   type: 'webrtc_answer',
+    //   data: data,
+    // }, socketId);
   }
 
   async function handleWebRTCIceCandidate(socketId: string, data: any) {
-    broadcastToCall(data.callId, {
-      type: 'webrtc_ice_candidate',
-      data: data,
-    }, socketId);
+    // distributeMessage(socketId, {
+    //   type: 'webrtc_ice_candidate',
+    //   data: data,
+    // });
+    // broadcastToCall(data.callId, {
+    //   type: 'webrtc_ice_candidate',
+    //   data: data,
+    // }, socketId);
   }
 
   async function handleUserStatusUpdate(socketId: string, data: any) {
     const client = clients.get(socketId);
     if (!client) return;
-
-    client.userId = data.userId;
-    userSockets.set(data.userId, socketId);
+    userSockets.set(data.userId, {
+      socketId,
+      isAdmin: false,
+    });
 
     await storage.updateUserStatus(data.userId, data.status);
     broadcastUserStatusUpdate(data.userId, data.status);
