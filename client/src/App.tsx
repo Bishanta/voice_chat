@@ -9,6 +9,7 @@ import { Link, useLocation } from "wouter";
 import AdminPage from "@/pages/admin";
 import UserPage from "@/pages/user";
 import NotFound from "@/pages/not-found";
+import HomePage from "@/pages/home";
 
 function Navigation() {
   const [location] = useLocation();
@@ -52,7 +53,7 @@ function Router() {
     <Switch>
       <Route path="/admin" component={AdminPage} />
       <Route path="/user" component={UserPage} />
-      <Route path="/" component={AdminPage} />
+      <Route path="/" component={HomePage} />
       <Route component={NotFound} />
     </Switch>
   );

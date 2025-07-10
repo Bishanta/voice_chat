@@ -27,7 +27,8 @@ export default function AdminPage() {
   } = useWebRTC();
   const { initSocket, isConnected, sendMessage } = useSocket();
 
-  const [currentAdmin, setCurrentAdmin] = useState<User | null>(null);
+  // const [currentAdmin, setCurrentAdmin] = useState<User | null>(null);
+  const currentAdminRef = useRef<User | null>(null);
   const [showLoginModal, setShowLoginModal] = useState(true);
   const [customers, setCustomers] = useState<User[]>([]);
   const [incomingCalls, setIncomingCalls] = useState<any[]>([]);
@@ -44,7 +45,7 @@ export default function AdminPage() {
   const { data: customersData } = useQuery<User[]>({
     queryKey: ["/api/users/customers"],
     refetchInterval: 5000,
-    enabled: !!currentAdmin, // Only fetch customers when admin is logged in
+    enabled: !!currentAdminRef.current, // Only fetch customers when admin is logged in
   });
 
   const handleWebSocketMessage = useCallback((message: WSMessage) => {
@@ -84,7 +85,8 @@ export default function AdminPage() {
       return response.json();
     },
     onSuccess: async (user: User) => {
-      setCurrentAdmin(user);
+      // setCurrentAdmin(user);
+      currentAdminRef.current = user;
       setShowLoginModal(false);
       const socket = await initSocket(handleWebSocketMessage, user);
       await initializeWebRTC(socket);
@@ -134,13 +136,18 @@ export default function AdminPage() {
   };
 
   const handleCallAccepted = (data: any) => {
-    console.log("Call accepted", data, activeCallRef.current)
-    if(activeCallRef.current?.callId === data.callId){
+    console.log("Call accepted", data, currentAdminRef.current)
+    if(currentAdminRef.current?.customerId === data.receiverId){
       console.log("User accepted call")
       audioManager.stopRingTone();
       setCallModalType("active");
       setCallDuration(0);
       // initializePeerConnection(data, true);
+    }
+    else {
+      setShowCallModal(false);
+      audioManager.stopRingTone();
+
     }
   };
 
@@ -171,15 +178,15 @@ export default function AdminPage() {
   };
 
   const callCustomer = (customer: User) => {
-    if (!currentAdmin) return;
+    if (!currentAdminRef.current) return;
     audioManager.resumeAudioContext();
     const callId = `call_${Date.now()}`;
     const callData = {
       callId,
       caller: {
-        id: currentAdmin.customerId,
-        name: currentAdmin.name,
-        avatar: currentAdmin.avatar,
+        id: currentAdminRef.current.customerId,
+        name: currentAdminRef.current.name,
+        avatar: currentAdminRef.current.avatar,
       },
       receiver: {
         id: customer.customerId,
@@ -281,7 +288,7 @@ export default function AdminPage() {
     return <AdminLoginModal isOpen={showLoginModal} onLogin={handleLogin} />;
   }
 
-  if (!currentAdmin) {
+  if (!currentAdminRef.current) {
     return <div className="flex items-center justify-center h-screen">Loading...</div>;
   }
 
@@ -296,7 +303,7 @@ export default function AdminPage() {
                 <Headphones className="h-6 w-6" />
                 <span>Admin Dashboard</span>
               </CardTitle>
-              <p className="text-gray-600 mt-1">Welcome, {currentAdmin.customerId} {JSON.stringify(activeCall)}</p>
+              <p className="text-gray-600 mt-1">Welcome, {currentAdminRef.current?.customerId}</p>
             </div>
             <div className="flex items-center space-x-4">
               <div className="flex items-center space-x-2">

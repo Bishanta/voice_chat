@@ -374,6 +374,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     
     broadcastToAdmins('call_accepted', {
       callId,
+      receiverId: callInfo.receiverId,
     });
 
   }
