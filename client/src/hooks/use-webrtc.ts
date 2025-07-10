@@ -4,41 +4,40 @@ import { Socket } from 'socket.io-client';
 
 export function useWebRTC() {
   const [isConnected, setIsConnected] = useState(false);
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  // const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  // const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-  const localAudioRef = useRef<HTMLAudioElement | null>(null);
-  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const localAudioRef = useRef<MediaStream | null>(null);
+  const remoteAudioRef = useRef<MediaStream | null>(null);
   const socketRef = useRef<Socket | null>(null);
 
   const handleWebRTCMessage = useCallback(async (message: any) => {
     if (!peerConnectionRef.current || !socketRef.current) return;
-
     switch (message.type) {
       case 'webrtc_offer':
-        await handleOffer(message.data.offer);
+        await handleOffer(message.data);
         break;
       case 'webrtc_answer':
-        await handleAnswer(message.data.answer);
+        await handleAnswer(message.data);
         break;
       case 'webrtc_ice_candidate':
-        await handleIceCandidate(message.data.candidate);
+        await handleIceCandidate(message.data);
         break;
     }
   }, []);
 
   const addSocketEvents = useCallback((socket: Socket) => {
     socket.on('message', handleWebRTCMessage);
-  }, []);
+  }, [handleWebRTCMessage]);
 
   const closePeerConnection = useCallback(() => {
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
       peerConnectionRef.current = null;
     }
-    setRemoteStream(null);
+    // setRemoteStream(null);
     setIsConnected(false);
     setIsMuted(false);
   }, []);
@@ -71,7 +70,8 @@ export function useWebRTC() {
       audio: true, 
       video: false 
     });
-    setLocalStream(stream);
+    // setLocalStream(stream);
+    localAudioRef.current = stream;
   }, []);
 
   const initializePeerConnection = useCallback(async (callData: any, isInitiator: boolean = false) => {
@@ -87,18 +87,23 @@ export function useWebRTC() {
         ],
       });
 
-      // Add local stream
-      localStream?.getTracks().forEach(track => {
-        pc.addTrack(track, localStream);
-      });
+      console.log("add local stream", localAudioRef.current)
+      
+      if(localAudioRef.current){
+        const localStream = localAudioRef.current;
+        localStream.getTracks().forEach(track => {
+          pc.addTrack(track, localStream);
+        });
+      }
 
+      // Set up remote stream handling
+      remoteAudioRef.current = new MediaStream();
       // Handle remote stream
       pc.ontrack = (event) => {
-        const [remoteStream] = event.streams;
-        setRemoteStream(remoteStream);
-        if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = remoteStream;
-        }
+        event.streams[0].getTracks().forEach(track => {
+          console.log("Remote stream track added", track);
+          remoteAudioRef.current?.addTrack(track);
+        });
       };
 
       // Handle ICE candidates
@@ -154,11 +159,12 @@ export function useWebRTC() {
     }
   }, []);
 
-  const handleOffer = useCallback(async (callData: any) => {
+  const handleOffer = useCallback(async (data: any) => {
     if (!peerConnectionRef.current) return;
 
+    console.log("handleOffer", data)
     try {
-      await peerConnectionRef.current.setRemoteDescription(callData.offer);
+      await peerConnectionRef.current.setRemoteDescription(data.offer);
       const answer = await peerConnectionRef.current.createAnswer();
       await peerConnectionRef.current.setLocalDescription(answer);
       
@@ -166,7 +172,7 @@ export function useWebRTC() {
         socketRef.current.emit('message', {
           type: 'webrtc_answer',
           data: {
-            callId: callData.callId,
+            callId: data.callId,
             answer,
           },
         });
@@ -176,34 +182,36 @@ export function useWebRTC() {
     }
   }, []);
 
-  const handleAnswer = useCallback(async (answer: RTCSessionDescriptionInit) => {
+  const handleAnswer = useCallback(async (data: any) => {
     if (!peerConnectionRef.current) return;
 
+    console.log("handleAnswer", data)
     try {
-      await peerConnectionRef.current.setRemoteDescription(answer);
+      await peerConnectionRef.current.setRemoteDescription(data.answer);
     } catch (error) {
       console.error('Failed to handle answer:', error);
     }
   }, []);
 
-  const handleIceCandidate = useCallback(async (candidate: RTCIceCandidateInit) => {
+  const handleIceCandidate = useCallback(async (data: any) => {
     if (!peerConnectionRef.current) return;
 
+    console.log("handleIceCandidate", data)
     try {
-      await peerConnectionRef.current.addIceCandidate(candidate);
+      await peerConnectionRef.current.addIceCandidate(data.candidate);
     } catch (error) {
       console.error('Failed to add ICE candidate:', error);
     }
   }, []);
 
   const toggleMute = useCallback(() => {
-    if (localStream) {
-      localStream.getAudioTracks().forEach(track => {
+    if (localAudioRef.current) {
+      localAudioRef.current.getAudioTracks().forEach(track => {
         track.enabled = !track.enabled;
       });
       setIsMuted(!isMuted);
     }
-  }, [localStream, isMuted]);
+  }, [isMuted]);
 
   const endCall = useCallback(() => {
     if (peerConnectionRef.current) {
@@ -211,23 +219,20 @@ export function useWebRTC() {
       peerConnectionRef.current = null;
     }
     
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-      setLocalStream(null);
+    if (localAudioRef.current) {
+      localAudioRef.current.getTracks().forEach(track => track.stop());
+      localAudioRef.current = null;
     }
     
-    setRemoteStream(null);
+    remoteAudioRef.current = null;
     setIsConnected(false);
     setIsMuted(false);
-  }, [localStream]);
+  }, []);
 
   return {
     initializeWebRTC,
     isConnected,
-    localStream,
-    remoteStream,
     isMuted,
-    localAudioRef,
     remoteAudioRef,
     initializePeerConnection,
     toggleMute,

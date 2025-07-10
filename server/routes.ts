@@ -254,7 +254,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } else {
         console.log(`Customer ${data.caller.id} socket not found`);
       }
-    } else {
+    } 
+    else {
       broadcastToAdmins('call_initiated', data);
     }
   }
@@ -440,36 +441,73 @@ export async function registerRoutes(app: Express): Promise<Server> {
   }
 
   async function handleWebRTCOffer(socketId: string, data:any) {
-    // distributeMessage(socketId, {
-    //   type: 'webrtc_offer',
-    //   data: data,
-    // });
-    // broadcastToCall(data.callId, {
-    //   type: 'webrtc_offer',
-    //   data: data,
-    // }, socketId);
+    const callInfo = activeCalls.get(data.callId);
+    if(!callInfo) return;
+
+    const userId = getUserIdFromSocketId(socketId);
+    const userInfo = userSockets.get(userId);
+    if(!userInfo) return;
+    if(callInfo.receiverId) {
+      const recieverId = callInfo.callerId == userId ? callInfo.receiverId : callInfo.callerId;
+      const receiverInfo = userSockets.get(recieverId);
+      if(!receiverInfo) return;
+      const receiverClient = clients.get(receiverInfo.socketId);
+      if (receiverClient) {
+        receiverClient.socket.emit('message', {
+          type: 'webrtc_offer',
+          data: data,
+        });
+      } else {
+        console.log(`Customer ${recieverId} not connected`);
+      }
+    }
+
   }
 
   async function handleWebRTCAnswer(socketId: string, data: any) {
-    // distributeMessage(socketId, {
-    //   type: 'webrtc_answer',
-    //   data: data,
-    // });
-    // broadcastToCall(data.callId, {
-    //   type: 'webrtc_answer',
-    //   data: data,
-    // }, socketId);
+    const callInfo = activeCalls.get(data.callId);
+    if(!callInfo) return;
+
+    const userId = getUserIdFromSocketId(socketId);
+    const userInfo = userSockets.get(userId);
+    if(!userInfo) return;
+    if(callInfo.receiverId) {
+      const recieverId = callInfo.callerId == userId ? callInfo.receiverId : callInfo.callerId;
+      const receiverInfo = userSockets.get(recieverId);
+      if(!receiverInfo) return;
+      const receiverClient = clients.get(receiverInfo.socketId);
+      if (receiverClient) {
+        receiverClient.socket.emit('message', {
+          type: 'webrtc_answer',
+          data: data,
+        });
+      } else {
+        console.log(`Customer ${recieverId} not connected`);
+      }
+    }
   }
 
   async function handleWebRTCIceCandidate(socketId: string, data: any) {
-    // distributeMessage(socketId, {
-    //   type: 'webrtc_ice_candidate',
-    //   data: data,
-    // });
-    // broadcastToCall(data.callId, {
-    //   type: 'webrtc_ice_candidate',
-    //   data: data,
-    // }, socketId);
+    const callInfo = activeCalls.get(data.callId);
+    if(!callInfo) return;
+
+    const userId = getUserIdFromSocketId(socketId);
+    const userInfo = userSockets.get(userId);
+    if(!userInfo) return;
+    if(callInfo.receiverId) {
+      const recieverId = callInfo.callerId == userId ? callInfo.receiverId : callInfo.callerId;
+      const receiverInfo = userSockets.get(recieverId);
+      if(!receiverInfo) return;
+      const receiverClient = clients.get(receiverInfo.socketId);
+      if (receiverClient) {
+        receiverClient.socket.emit('message', {
+          type: 'webrtc_ice_candidate',
+          data: data,
+        });
+      } else {
+        console.log(`Customer ${recieverId} not connected`);
+      }
+    }
   }
 
   async function handleUserStatusUpdate(socketId: string, data: any) {

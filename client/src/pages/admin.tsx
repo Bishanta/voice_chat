@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,11 +15,28 @@ import { toast } from "@/hooks/use-toast";
 import { WSMessage } from "@shared/schema";
 
 export default function AdminPage() {
+  // ...existing code
+  // Add audio refs from useWebRTC
+  const {
+    initializeWebRTC,
+    isMuted,
+    toggleMute,
+    endCall: endWebRTCCall,
+    initializePeerConnection,
+    remoteAudioRef
+  } = useWebRTC();
+  const { initSocket, isConnected, sendMessage } = useSocket();
+
   const [currentAdmin, setCurrentAdmin] = useState<User | null>(null);
   const [showLoginModal, setShowLoginModal] = useState(true);
   const [customers, setCustomers] = useState<User[]>([]);
   const [incomingCalls, setIncomingCalls] = useState<any[]>([]);
   const [activeCall, setActiveCall] = useState<any>(null);
+  const activeCallRef = useRef(activeCall);
+
+  useEffect(() => {
+    activeCallRef.current = activeCall;
+  }, [activeCall]);
   const [callDuration, setCallDuration] = useState(0);
   const [showCallModal, setShowCallModal] = useState(false);
   const [callModalType, setCallModalType] = useState<"incoming" | "outgoing" | "active">("incoming");
@@ -55,15 +72,7 @@ export default function AdminPage() {
     }
   }, []);
 
-  const { initSocket, isConnected, sendMessage } = useSocket();
 
-  const { 
-    initializeWebRTC,
-    isMuted, 
-    toggleMute, 
-    endCall: endWebRTCCall, 
-    initializePeerConnection 
-  } = useWebRTC();
 
   const loginMutation = useMutation({
     mutationFn: async (accessCode: string) => {
@@ -125,10 +134,14 @@ export default function AdminPage() {
   };
 
   const handleCallAccepted = (data: any) => {
-    audioManager.stopRingTone();
-    setCallModalType("active");
-    setCallDuration(0);
-    initializePeerConnection(data);
+    console.log("Call accepted", data, activeCallRef.current)
+    if(activeCallRef.current?.callId === data.callId){
+      console.log("User accepted call")
+      audioManager.stopRingTone();
+      setCallModalType("active");
+      setCallDuration(0);
+      // initializePeerConnection(data, true);
+    }
   };
 
   const handleCallDeclined = (data: any) => {
@@ -273,7 +286,8 @@ export default function AdminPage() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <>
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       <Card className="mb-6">
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -282,7 +296,7 @@ export default function AdminPage() {
                 <Headphones className="h-6 w-6" />
                 <span>Admin Dashboard</span>
               </CardTitle>
-              <p className="text-gray-600 mt-1">Welcome, {currentAdmin.customerId}</p>
+              <p className="text-gray-600 mt-1">Welcome, {currentAdmin.customerId} {JSON.stringify(activeCall)}</p>
             </div>
             <div className="flex items-center space-x-4">
               <div className="flex items-center space-x-2">
@@ -356,7 +370,9 @@ export default function AdminPage() {
         onDecline={declineCall}
         onEnd={endCall}
         onToggleMute={toggleMute}
+        remoteAudioRef={remoteAudioRef}
       />
     </div>
+    </>
   );
 }

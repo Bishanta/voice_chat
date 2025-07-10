@@ -17,6 +17,7 @@ interface CallModalProps {
   onDecline?: () => void;
   onEnd?: () => void;
   onToggleMute?: () => void;
+  remoteAudioRef: React.RefObject<MediaStream>;
 }
 
 export function CallModal({
@@ -29,14 +30,25 @@ export function CallModal({
   onDecline,
   onEnd,
   onToggleMute,
+  remoteAudioRef,
 }: CallModalProps) {
-  const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  // useEffect is not needed for autoplay since it's a prop on the element
 
+  const audioRef = useRef<HTMLAudioElement>(null);
+  
   useEffect(() => {
-    if (type === "active" && remoteAudioRef.current) {
-      remoteAudioRef.current.autoplay = true;
-    }
-  }, [type]);
+    const audioElement = audioRef.current;
+    if (!audioElement || !remoteAudioRef.current) return;
+  
+    // Set the MediaStream as the source
+    audioElement.srcObject = remoteAudioRef.current;
+  
+    // Cleanup function
+    return () => {
+      audioElement.srcObject = null;
+    };
+  }, [remoteAudioRef.current]);
+
 
   if (!isOpen) return null;
 
@@ -120,7 +132,12 @@ export function CallModal({
             </>
           )}
           
-          <audio ref={remoteAudioRef} autoPlay />
+          <audio 
+            ref={audioRef} 
+            autoPlay 
+            playsInline  // Important for iOS
+            onError={(e) => console.error('Audio playback error:', e)}
+          />
         </CardContent>
       </Card>
     </div>
