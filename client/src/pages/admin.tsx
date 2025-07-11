@@ -137,7 +137,7 @@ export default function AdminPage() {
 
   const handleCallAccepted = (data: any) => {
     console.log("Call accepted", data, currentAdminRef.current)
-    if(currentAdminRef.current?.customerId === data.receiverId){
+    if(currentAdminRef.current?.customerId === data.receiverId || currentAdminRef.current?.customerId === data.callerId){
       console.log("User accepted call")
       audioManager.stopRingTone();
       setCallModalType("active");

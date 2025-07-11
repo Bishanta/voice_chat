@@ -219,10 +219,10 @@ export function useWebRTC() {
       peerConnectionRef.current = null;
     }
     
-    if (localAudioRef.current) {
-      localAudioRef.current.getTracks().forEach(track => track.stop());
-      localAudioRef.current = null;
-    }
+    // if (localAudioRef.current) {
+    //   localAudioRef.current.getTracks().forEach(track => track.stop());
+    //   localAudioRef.current = null;
+    // }
     
     remoteAudioRef.current = null;
     setIsConnected(false);
